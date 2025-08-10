@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="hi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Plot Locator — Satellite Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    html,body,#map { height:100%; margin:0; padding:0 }
+    #map{ position:fixed; inset:0 }
+    .topbar { position: absolute; left:10px; top:10px; z-index:1000; background:#fff; padding:8px; border-radius:8px; box-shadow:0 2px 6px rgba(0,0,0,0.15); min-width:220px }
+    .btn { display:inline-block; margin:3px; padding:8px 10px; border-radius:6px; background:#1976d2; color:#fff; cursor:pointer; font-size:13px; border:none }
+    .btn.secondary { background:#4caf50 }
+    .infoBox { margin-top:6px; font-size:13px }
+    .toggle-btn { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 1000; background: white; padding: 6px 10px; border: 1px solid #888; border-radius: 6px; cursor: pointer; }
+    .plot-label { pointer-events:none; transform: translate(-50%, -50%); }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="topbar">
+    <div><strong>Plot Locator</strong></div>
+    <div style="margin-top:6px">
+      <button id="locateBtn" class="btn">Meri location dhoondo</button>
+      <button id="fitAllBtn" class="btn secondary">Poore map dikhao</button>
+    </div>
+    <div class="infoBox" id="info">Loading map...</div>
+  </div>
+  <button class="toggle-btn" id="toggleBtn">Show Plot Numbers</button>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
+
+  <script>
+    // CONFIG
+    const GEOJSON_PATH = 'data.geojson'; // <-- place your GeoJSON in same repo with this name
+    const PLOT_PROP = 'Name';
+    const DEFAULT_CENTER = [25.339365,85.765942];
+    const DEFAULT_ZOOM = 19;
+    const MAX_ZOOM = 21;
+
+    // Initialize map
+    const map = L.map('map', { maxZoom: MAX_ZOOM, minZoom: 14 });
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      attribution: 'Tiles © Esri',
+      maxZoom: MAX_ZOOM
+    }).addTo(map);
+
+    // Layers
+    let geoLayer = L.geoJSON(null, { style: f => ({ color:'#ff7800', weight:2, fillOpacity:0.12 }), onEachFeature: onEachFeature }).addTo(map);
+    let labelLayer = L.layerGroup().addTo(map); // labels prepared but not added automatically
+    let labelsShown = false;
+    let loadedGeo = null;
+
+    // Load GeoJSON (relative)
+    fetch(GEOJSON_PATH)
+      .then(r => {
+        if (!r.ok) throw new Error('GeoJSON load error: ' + r.status);
+        return r.json();
+      })
+      .then(data => {
+        loadedGeo = data;
+        geoLayer.addData(data);
+        buildAllLabels(); // prepare label layer (hidden by default)
+        const bounds = geoLayer.getBounds();
+        if (bounds.isValid()) {
+          map.fitBounds(bounds, {padding:[20,20]});
+          map.once('moveend', () => { map.setZoom(Math.min(MAX_ZOOM, map.getZoom() + 1)); });
+        } else {
+          map.setView(DEFAULT_CENTER, DEFAULT_ZOOM);
+        }
+        document.getElementById('info').innerText = 'Map loaded. "Meri location dhoondo" dabayein.';
+      })
+      .catch(err => {
+        console.error(err);
+        map.setView(DEFAULT_CENTER, DEFAULT_ZOOM);
+        document.getElementById('info').innerText = 'GeoJSON load error: ' + err.message;
+      });
+
+    // Feature interactions
+    function onEachFeature(feature, layer) {
+      const plotNo = (feature.properties && feature.properties[PLOT_PROP]) ? feature.properties[PLOT_PROP] : 'Unknown';
+      // click to show info and zoom
+      layer.on('click', () => showFeatureInfo(feature, layer, true));
+    }
+
+    function showFeatureInfo(feature, layer, zoomIn=false) {
+      const plotNo = (feature.properties && feature.properties[PLOT_PROP]) ? feature.properties[PLOT_PROP] : 'Unknown';
+      let areaSqFt = 'N/A';
+      try { areaSqFt = (turf.area(feature) * 10.763910416709722).toFixed(2); } catch(e){}
+      let center = [0,0];
+      try { const c = turf.centroid(feature).geometry.coordinates; center = [c[1], c[0]]; } catch(e){}
+      const googleLink = `https://www.google.com/maps/search/?api=1&query=${center[0]},${center[1]}`;
+
+      const popupHtml = `<div><strong>Plot: ${plotNo}</strong><br/>Area: ${areaSqFt} sq ft<br/><a href="${googleLink}" target="_blank">Google Maps par dekhe</a></div>`;
+      try {
+        const c = turf.centroid(feature).geometry.coordinates;
+        L.popup({maxWidth:300}).setLatLng([c[1], c[0]]).setContent(popupHtml).openOn(map);
+      } catch(e) {
+        layer.bindPopup(popupHtml).openPopup();
+      }
+
+      if (window._highlight) map.removeLayer(window._highlight);
+      window._highlight = L.geoJSON(feature, {style:{color:'#00bfa5', weight:3, fillOpacity:0.25}}).addTo(map);
+
+      hideAllLabels();
+      document.getElementById('info').innerText = `Plot: ${plotNo}`;
+
+      if (zoomIn) {
+        if (center[0] && center[1]) map.setView(center, Math.min(MAX_ZOOM, 20));
+        else if (layer.getBounds) { map.fitBounds(layer.getBounds()); map.setZoom(Math.min(MAX_ZOOM, map.getZoom() + 1)); }
+      }
+    }
+
+    // LOCATION functions
+    function startLocationRequest() {
+      map.locate({setView:false, enableHighAccuracy:true, maxZoom: MAX_ZOOM});
+    }
+
+    function findUserPlot(latlng) {
+      if (!loadedGeo || !loadedGeo.features) return null;
+      let found = null;
+      loadedGeo.features.forEach(f => {
+        try { if (turf.booleanPointInPolygon(turf.point([latlng.lng, latlng.lat]), f)) found = f; } catch(e){}
+      });
+      return found;
+    }
+
+    document.getElementById('locateBtn').addEventListener('click', () => {
+      document.getElementById('info').innerText = 'Location dhoonda ja raha... (Allow location permission)';
+      startLocationRequest();
+    });
+
+    map.on('locationfound', function(e){
+      const latlng = L.latLng(e.latitude, e.longitude);
+      if (window._youMarker) map.removeLayer(window._youMarker);
+      window._youMarker = L.circleMarker(latlng, {radius:7, color:'#1976d2', fillColor:'#1976d2', fillOpacity:1}).addTo(map);
+
+      const foundFeature = findUserPlot(latlng);
+      if (foundFeature) {
+        document.getElementById('info').innerText = 'Aap is plot me khade hain: ' + (foundFeature.properties && foundFeature.properties[PLOT_PROP] ? foundFeature.properties[PLOT_PROP] : 'Unknown');
+        if (window._highlight) map.removeLayer(window._highlight);
+        window._highlight = L.geoJSON(foundFeature, {style:{color:'#00bfa5', weight:3, fillOpacity:0.25}}).addTo(map);
+        try { const c = turf.centroid(foundFeature).geometry.coordinates; L.popup().setLatLng([c[1], c[0]]).setContent(`<strong>Plot: ${foundFeature.properties[PLOT_PROP] || 'Unknown'}</strong>`).openOn(map); } catch(e){}
+        map.setView(latlng, Math.min(MAX_ZOOM, 20));
+      } else {
+        document.getElementById('info').innerText = 'Koi plot nahi mila jahan aap khade hain.';
+        map.setView(latlng, Math.min(MAX_ZOOM, 19));
+      }
+    });
+
+    map.on('locationerror', function(e){
+      document.getElementById('info').innerText = 'Location error: ' + (e && e.message ? e.message : 'Permission denied') + '. App/Browser ko location permission dijiye.';
+    });
+
+    // LABELS: build, show, hide
+    function buildAllLabels() {
+      if (!loadedGeo || !loadedGeo.features) return;
+      const items = [];
+      loadedGeo.features.forEach(f => {
+        try {
+          const c = turf.centroid(f).geometry.coordinates;
+          const plotNo = (f.properties && f.properties[PLOT_PROP]) ? f.properties[PLOT_PROP] : '';
+          const m = L.marker([c[1], c[0]], {
+            icon: L.divIcon({
+              className: 'plot-label',
+              html: `<div style="font-size:12px; padding:2px 6px; background:rgba(255,255,255,0.9); border-radius:4px; border:1px solid #ddd">${plotNo}</div>`
+            })
+          });
+          items.push(m);
+        } catch(e){ }
+      });
+      labelLayer = L.layerGroup(items);
+    }
+
+    function showAllLabels() { if (!labelLayer || labelLayer.getLayers().length===0) buildAllLabels(); if (labelLayer && !map.hasLayer(labelLayer)) map.addLayer(labelLayer); }
+    function hideAllLabels() { try { if (labelLayer && map.hasLayer(labelLayer)) map.removeLayer(labelLayer); } catch(e){} }
+
+    // Toggle button behavior
+    const toggleBtn = document.getElementById('toggleBtn');
+    toggleBtn.addEventListener('click', () => {
+      labelsShown = !labelsShown;
+      toggleBtn.innerText = labelsShown ? 'Hide Plot Numbers' : 'Show Plot Numbers';
+      if (labelsShown) showAllLabels(); else hideAllLabels();
+    });
+
+    // Fit all button
+    document.getElementById('fitAllBtn').addEventListener('click', () => {
+      if (geoLayer && geoLayer.getBounds && geoLayer.getBounds().isValid()) {
+        map.fitBounds(geoLayer.getBounds(), {padding:[20,20]});
+        map.once('moveend', () => { map.setZoom(Math.min(MAX_ZOOM, map.getZoom() + 1)); });
+      } else alert('GeoJSON data nahin mila ya valid nahi hai.');
+    });
+
+    // Auto-request location on load (optional; prompts permission)
+    window.addEventListener('load', () => { setTimeout(() => { try { startLocationRequest(); } catch(e){} }, 700); });
+
+    // Debug access from console
+    window.geoLayer = geoLayer;
+    window.labelLayer = labelLayer;
+  </script>
+</body>
+</html>
